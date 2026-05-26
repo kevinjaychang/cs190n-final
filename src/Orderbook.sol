@@ -63,11 +63,11 @@ contract Orderbook is IOrderbook {
         return address(quoteToken);
     }
 
-    function placeLimitOrder(Side, uint256, uint256) external returns (uint256) {
+    function placeLimitOrder(Side side, uint256 price, uint256 amount) external returns (uint256) {
         revert("NotImplemented");
     }
 
-    function placeMarketOrder(Side, uint256) external {
+    function placeMarketOrder(Side side, uint256 amount) external {
         revert("NotImplemented");
     }
 
