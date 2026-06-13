@@ -13,6 +13,8 @@ interface IERC20 {
     function allowance(address owner, address spender) external view returns (uint256);
 }
 
+
+
 /// @title Orderbook (template)
 /// @notice Skeleton to complete. The constructor, immutable
 ///         token wiring, and the two trivial getters are already done —
@@ -55,6 +57,18 @@ contract Orderbook is IOrderbook {
         quoteToken = IERC20(_quoteToken);
     }
 
+    struct Order {
+        address maker;
+        uint256 price;
+        uint256 amount;
+        uint256 orderId;
+    }
+
+    Order[] bids;
+    Order[] asks;
+    uint256 next = 1;
+
+
     function getBaseToken() external view returns (address) {
         return address(baseToken);
     }
@@ -64,26 +78,166 @@ contract Orderbook is IOrderbook {
     }
 
     function placeLimitOrder(Side side, uint256 price, uint256 amount) external returns (uint256) {
-        revert("NotImplemented");
+        uint256 orderId = next++;
+        uint256 remaining = amount;
+        
+        if (side == Side.BUY) {
+            for (uint256 i = 0; i < asks.length && remaining > 0; i++) {
+                Order storage order = asks[i];
+                if (order.amount == 0){ 
+                    continue;
+                }
+                if (price < order.price) {
+                    break;
+                }
+                
+                uint256 fillAmount = remaining < order.amount ? remaining : order.amount;
+                uint256 quoteAmount = (fillAmount * order.price) / 1e18;
+                
+                quoteToken.transferFrom(msg.sender, order.maker, quoteAmount);
+                baseToken.transfer(msg.sender, fillAmount);
+                
+                emit OrderFilled(order.orderId, msg.sender, fillAmount, order.price);
+                
+                remaining -= fillAmount;
+                order.amount -= fillAmount;
+            }
+            
+            if (remaining > 0) {//for edge case unfilled
+                uint256 quoteRequired = (remaining * price) / 1e18;
+                quoteToken.transferFrom(msg.sender, address(this), quoteRequired);
+                
+                Order memory newOrder = Order({
+                    maker: msg.sender,
+                    price: price,
+                    amount: remaining,
+                    orderId: orderId
+                });
+                bids.push(newOrder);
+            }
+        } else {
+            for (uint256 i = 0; i < bids.length && remaining > 0; i++) {
+                Order storage order = bids[i];
+                if (order.amount == 0) continue;
+                if (price > order.price) break;
+                
+                uint256 fillAmount = remaining < order.amount ? remaining : order.amount;
+                uint256 quoteAmount = (fillAmount * order.price) / 1e18;
+                
+                baseToken.transferFrom(msg.sender, order.maker, fillAmount);
+                quoteToken.transfer(msg.sender, quoteAmount);
+                
+                emit OrderFilled(order.orderId, msg.sender, fillAmount, order.price);
+                
+                remaining -= fillAmount;
+                order.amount -= fillAmount;
+            }
+            
+            if (remaining > 0) {
+                baseToken.transferFrom(msg.sender, address(this), remaining);
+                
+                Order memory newOrder = Order({
+                    maker: msg.sender,
+                    price: price,
+                    amount: remaining,
+                    orderId: orderId
+                });
+                asks.push(newOrder);
+            }
+        }
+        
+        emit OrderPlaced(orderId, msg.sender, side, price, amount);
+        return orderId;
     }
 
     function placeMarketOrder(Side side, uint256 amount) external {
-        revert("NotImplemented");
+        uint256 remaining = amount;
+        
+        if (side == Side.BUY) {
+            // Market buy
+            for (uint256 i = 0; i < asks.length && remaining > 0; i++) {
+                Order storage order = asks[i];
+                if (order.amount == 0) continue;
+                
+                uint256 fillAmount = remaining < order.amount ? remaining : order.amount;
+                uint256 quoteAmount = (fillAmount * order.price) / 1e18;
+                
+                // transfer the money
+                quoteToken.transferFrom(msg.sender, order.maker, quoteAmount);
+                baseToken.transfer(msg.sender, fillAmount);
+                
+                emit OrderFilled(order.orderId, msg.sender, fillAmount, order.price);
+                
+                remaining -= fillAmount;
+                order.amount -= fillAmount;
+            }
+        } else {
+            // Market sell
+            for (uint256 i = 0; i < bids.length && remaining > 0; i++) {
+                Order storage order = bids[i];
+                if (order.amount == 0) continue;  //skip teh fully filled orders
+                
+                uint256 fillAmount = remaining < order.amount ? remaining : order.amount;
+                uint256 quoteAmount = (fillAmount * order.price) / 1e18;
+                
+                baseToken.transferFrom(msg.sender, order.maker, fillAmount);
+                quoteToken.transfer(msg.sender, quoteAmount);
+                
+                emit OrderFilled(order.orderId, msg.sender, fillAmount, order.price);
+                
+                remaining -= fillAmount;
+                order.amount -= fillAmount;
+            }
+        }
     }
 
     function clear() external {
-        revert("NotImplemented");
+        delete bids;    
+        delete asks;
+        emit OrderCleared();
     }
 
     function getBidsCount() external view returns (uint256) {
-        revert("NotImplemented");
+        uint256 count = 0;
+        for (uint256 i = 0; i < bids.length; i++) {
+            if (bids[i].amount > 0) count++;
+        }
+        return count;
     }
 
     function getAsksCount() external view returns (uint256) {
-        revert("NotImplemented");
-    }
+        uint256 count = 0;
+        for (uint256 i = 0; i < asks.length; i++) {
+            if (asks[i].amount > 0) count++;
+        }
+        return count;
+        }
 
     function getMidPrice() external view returns (uint256) {
-        revert("NotImplemented");
+        require(bids.length > 0);
+        require(asks.length > 0);
+        uint256 bask = type(uint256).max;
+        for (uint256 i = 0; i < asks.length; i++) {
+            if (asks[i].amount > 0 && asks[i].price < bask) {
+                bask = asks[i].price;
+            }
+        }
+
+
+        uint256 bBid = 0;
+        for (uint256 i = 0; i < bids.length; i++) {//basically a max function
+            if (bids[i].amount > 0 && bids[i].price > bBid) {
+                bBid = bids[i].price;
+            }
+        }
+
+
+        
+        require(bBid > 0); // sanity checking
+        require(bask < type(uint256).max);
+        return (bBid + bask) / 2;
     }
+
+
+
 }
